@@ -11,7 +11,7 @@ import Swagger
 
 public class SwiftFormatter: CodeFormatter {
 
-    override var disallowedTypes: [String] {
+    override var disallowedKeyword: [String] {
         return [
             "Type",
             "Class",
@@ -19,6 +19,10 @@ public class SwiftFormatter: CodeFormatter {
             "Enum",
             "Protocol",
             "Set",
+            "extension",
+            "var",
+            "let",
+            "public",
         ]
     }
 
@@ -45,15 +49,17 @@ public class SwiftFormatter: CodeFormatter {
         case "number", "double": return "Double"
         case "date": return "Date"
         case "boolean": return "Bool"
-        case "file": return "URL"
+        case "file": return "FileType"
         case "uri": return "URL"
         case "object":
-            if let definition = value.dictionaryDefinition {
+            if let definition = value.object {
+                return "\(getModelName(definition))"
+            } else if let definition = value.dictionaryDefinition {
                 return "[String: \(getModelName(definition))]"
             } else if let value = value.dictionaryValue {
                 return "[String: \(getValueType(value))]"
             } else {
-                return "[String: Any]"
+                return "Any"
             }
         case "array":
             if let definition = value.arrayDefinition {
@@ -99,6 +105,10 @@ public class SwiftFormatter: CodeFormatter {
 
     override func escapeEnumType(_ name: String) -> String {
         return "\(name)Enum"
+    }
+
+    override func escapeValueName(_ name: String) -> String {
+        return "`\(name)`"
     }
 
     override func getEnumCaseName(_ name: String) -> String {
