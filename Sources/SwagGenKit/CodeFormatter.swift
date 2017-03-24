@@ -30,7 +30,7 @@ public class CodeFormatter {
 
         context["operations"] = spec.operations.map(getOperationContext)
         context["tags"] = spec.opererationsByTag.map { ["name": $0, "operations": $1.map(getOperationContext)] }
-        context["definitions"] = Array(spec.definitions.values).map(getDefinitionContext)
+        context["definitions"] = Array(spec.definitions.values).map(getSchemaContext)
         context["info"] = spec.info.flatMap(getSpecInfoContext)
         context["host"] = spec.host
         context["basePath"] = spec.basePath
@@ -61,7 +61,16 @@ public class CodeFormatter {
         let successResponse = operation.responses.filter { $0.statusCode == 200 || $0.statusCode == 204 }.first
         var context: [String: Any?] = [:]
 
-        context["operationId"] = operation.operationId
+        if let operationId = operation.operationId {
+            context["operationId"] = operationId
+        } else {
+            let pathParts = operation.path.components(separatedBy: "/")
+            var pathName = pathParts.map{$0.upperCamelCased()}.joined(separator: "")
+            pathName = pathName.replacingOccurrences(of: "\\{(.*)\\}", with: "By_$1", options: .regularExpression, range: nil)
+            let generatedOperationId = operation.method.lowercased() + pathName.upperCamelCased()
+            context["operationId"] = generatedOperationId
+        }
+
         context["method"] = operation.method.uppercased()
         context["path"] = operation.path
         context["description"] = operation.description
@@ -74,11 +83,12 @@ public class CodeFormatter {
         context["pathParams"] = operation.getParameters(type: .path).map(getParameterContext)
         context["queryParams"] = operation.getParameters(type: .query).map(getParameterContext)
         context["formParams"] = operation.getParameters(type: .form).map(getParameterContext)
+        context["headerParams"] = operation.getParameters(type: .header).map(getParameterContext)
         context["enums"] = operation.enums.map(getParameterContext)
         context["security"] = operation.security.map(getSecurityContext).first
         context["responses"] = operation.responses.map(getResponseContext)
         context["successResponse"] = successResponse.flatMap(getResponseContext)
-        context["successType"] = successResponse?.schema?.object.flatMap(getModelName) ?? successResponse?.schema.flatMap(getValueType)
+        context["successType"] = successResponse?.schema?.schema.flatMap(getSchemaType) ?? successResponse?.schema.flatMap(getValueType)
 
         return context
     }
@@ -104,8 +114,8 @@ public class CodeFormatter {
 
         context["type"] = getValueType(value)
         context["rawType"] = value.type
-        context["name"] = value.name
-        context["formattedName"] = getValueName(value)
+        context["rawName"] = value.name
+        context["name"] = getValueName(value)
         context["value"] = value.name
         context["required"] = value.required
         context["optional"] = !value.required
@@ -113,10 +123,10 @@ public class CodeFormatter {
         context["description"] = value.description
         let enums = value.enumValues ?? value.arrayValue?.enumValues
         context["enums"] = enums?.map { ["name": getEnumCaseName($0), "value": $0] }
-        context["arrayType"] = value.arrayDefinition.flatMap(getModelName)
-        context["dictionaryType"] = value.dictionaryDefinition.flatMap(getModelName)
+        context["arrayType"] = value.arraySchema.flatMap(getSchemaType)
+        context["dictionaryType"] = value.dictionarySchema.flatMap(getSchemaType)
         context["isArray"] = value.type == "array"
-        context["isDictionary"] = value.type == "object" && (value.dictionaryDefinition != nil || value.dictionaryValue != nil)
+        context["isDictionary"] = value.type == "object" && (value.dictionarySchema != nil || value.dictionaryValue != nil)
         context["isGlobal"] = value.isGlobal
         return context
     }
@@ -133,17 +143,17 @@ public class CodeFormatter {
         return getValueContext(value: property)
     }
 
-    func getDefinitionContext(definition: Definition) -> [String: Any?] {
+    func getSchemaContext(schema: Schema) -> [String: Any?] {
         var context: [String: Any?] = [:]
-        context["name"] = definition.name
-        context["formattedName"] = getModelName(definition)
-        context["parent"] = definition.parent.flatMap(getDefinitionContext)
-        context["description"] = definition.description
-        context["requiredProperties"] = definition.requiredProperties.map(getPropertyContext)
-        context["optionalProperties"] = definition.optionalProperties.map(getPropertyContext)
-        context["properties"] = definition.properties.map(getPropertyContext)
-        context["allProperties"] = definition.allProperties.map(getPropertyContext)
-        context["enums"] = definition.enums.map(getValueContext)
+        context["rawType"] = schema.name
+        context["type"] = getSchemaType(schema)
+        context["parent"] = schema.parent.flatMap(getSchemaContext)
+        context["description"] = schema.description
+        context["requiredProperties"] = schema.requiredProperties.map(getPropertyContext)
+        context["optionalProperties"] = schema.optionalProperties.map(getPropertyContext)
+        context["properties"] = schema.properties.map(getPropertyContext)
+        context["allProperties"] = schema.allProperties.map(getPropertyContext)
+        context["enums"] = schema.enums.map(getValueContext)
         return context
     }
 
@@ -155,10 +165,9 @@ public class CodeFormatter {
         return "_\(name)"
     }
 
-
-    func getModelName(_ definition: Definition) -> String {
-        let name = definition.name.upperCamelCased()
-        return disallowedTypes.contains(name) ? escapeModelType(name) : name
+    func getSchemaType(_ schema: Schema) -> String {
+        let type = schema.name.upperCamelCased()
+        return disallowedTypes.contains(type) ? escapeModelType(type) : type
     }
 
     func getValueName(_ value: Value) -> String {
@@ -166,8 +175,8 @@ public class CodeFormatter {
     }
 
     func getValueType(_ value: Value) -> String {
-        if let object = value.object {
-            return getModelName(object)
+        if let object = value.schema {
+            return getSchemaType(object)
         }
         if value.type == "unknown" {
             writeError("Couldn't calculate type")

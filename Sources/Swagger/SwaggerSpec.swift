@@ -13,7 +13,7 @@ import Yams
 public class SwaggerSpec: JSONObjectConvertible, CustomStringConvertible {
 
     public let paths: [String: Endpoint]
-    public let definitions: [String: Definition]
+    public let definitions: [String: Schema]
     public let parameters: [String: Parameter]
     public let security: [String: Security]
     public let info: Info?
@@ -108,25 +108,25 @@ public class SwaggerSpec: JSONObjectConvertible, CustomStringConvertible {
         for (name, definition) in definitions {
             definition.name = name
 
-            if let reference = getDefinitionReference(definition.reference) {
+            if let reference = getDefinitionSchema(definition.reference) {
                 for property in reference.properties {
                     definition.propertiesByName[property.name] = property
                 }
             }
 
-            if let reference = getDefinitionReference(definition.parentReference) {
+            if let reference = getDefinitionSchema(definition.parentReference) {
                 definition.parent = reference
             }
 
             for property in definition.properties {
-                if let reference = getDefinitionReference(property.reference) {
-                    property.object = reference
+                if let reference = getDefinitionSchema(property.reference) {
+                    property.schema = reference
                 }
-                if let reference = getDefinitionReference(property.arrayRef) {
-                    property.arrayDefinition = reference
+                if let reference = getDefinitionSchema(property.arrayRef) {
+                    property.arraySchema = reference
                 }
-                if let reference = getDefinitionReference(property.dictionaryDefinitionRef) {
-                    property.dictionaryDefinition = reference
+                if let reference = getDefinitionSchema(property.dictionarySchemaRef) {
+                    property.dictionarySchema = reference
                 }
 
                 for enumValue in enums {
@@ -144,30 +144,30 @@ public class SwaggerSpec: JSONObjectConvertible, CustomStringConvertible {
         for operation in operations {
 
             for (index, parameter) in operation.parameters.enumerated() {
-                if let reference = getDefinitionReference(parameter.reference) {
-                    parameter.object = reference
+                if let reference = getDefinitionSchema(parameter.reference) {
+                    parameter.schema = reference
                 }
                 if let reference = getParameterReference(parameter.reference) {
                     operation.parameters[index] = reference
                 }
-                if let reference = getDefinitionReference(parameter.arrayRef) {
-                    parameter.arrayDefinition = reference
+                if let reference = getDefinitionSchema(parameter.arrayRef) {
+                    parameter.arraySchema = reference
                 }
             }
             for response in operation.responses {
-                if let reference = getDefinitionReference(response.schema?.reference) {
-                    response.schema?.object = reference
-                } else if let reference = getDefinitionReference(response.schema?.arrayRef) {
-                    response.schema?.arrayDefinition = reference
+                if let reference = getDefinitionSchema(response.schema?.reference) {
+                    response.schema?.schema = reference
+                } else if let reference = getDefinitionSchema(response.schema?.arrayRef) {
+                    response.schema?.arraySchema = reference
                 }
-                if let reference = getDefinitionReference(response.schema?.dictionaryDefinitionRef) {
-                    response.schema?.dictionaryDefinition = reference
+                if let reference = getDefinitionSchema(response.schema?.dictionarySchemaRef) {
+                    response.schema?.dictionarySchema = reference
                 }
             }
         }
     }
 
-    func getDefinitionReference(_ reference: String?) -> Definition? {
+    func getDefinitionSchema(_ reference: String?) -> Schema? {
         return reference?.components(separatedBy: "/").last.flatMap { definitions[$0] }
     }
 
@@ -176,7 +176,7 @@ public class SwaggerSpec: JSONObjectConvertible, CustomStringConvertible {
     }
 
     public var description: String {
-        let ops = "Operations:\n\t" + operations.map { $0.operationId }.joined(separator: "\n\t") as String
+        let ops = "Operations:\n\t" + operations.map { $0.operationId ?? $0.path }.joined(separator: "\n\t") as String
         let defs = "Definitions:\n" + Array(definitions.values).map { $0.deepDescription(prefix: "\t") }.joined(separator: "\n") as String
         return "\(info)\n\n\(ops)\n\n\(defs))"
     }
