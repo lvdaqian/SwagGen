@@ -17,7 +17,7 @@ public class CodeFormatter {
         self.spec = spec
     }
 
-    var disallowedTypes: [String] {
+    var disallowedKeyword: [String] {
         return []
     }
 
@@ -74,6 +74,7 @@ public class CodeFormatter {
         context["pathParams"] = operation.getParameters(type: .path).map(getParameterContext)
         context["queryParams"] = operation.getParameters(type: .query).map(getParameterContext)
         context["formParams"] = operation.getParameters(type: .form).map(getParameterContext)
+        context["headerParams"] = operation.getParameters(type: .header).map(getParameterContext)
         context["enums"] = operation.enums.map(getParameterContext)
         context["security"] = operation.security.map(getSecurityContext).first
         context["responses"] = operation.responses.map(getResponseContext)
@@ -96,6 +97,7 @@ public class CodeFormatter {
             "statusCode": response.statusCode,
             "schema": response.schema.flatMap(getValueContext),
             "description": response.description,
+            "type": response.schema?.object.flatMap(getModelName) ?? response.schema.flatMap(getValueType)
         ]
     }
 
@@ -158,11 +160,16 @@ public class CodeFormatter {
 
     func getModelName(_ definition: Definition) -> String {
         let name = definition.name.upperCamelCased()
-        return disallowedTypes.contains(name) ? escapeModelType(name) : name
+        return disallowedKeyword.contains(name) ? escapeModelType(name) : name
     }
 
     func getValueName(_ value: Value) -> String {
-        return value.name.lowerCamelCased()
+        let name = value.name.lowerCamelCased()
+        return disallowedKeyword.contains(name) ? escapeValueName(name):name
+    }
+
+    func escapeValueName(_ name: String) -> String {
+        return "_\(name)"
     }
 
     func getValueType(_ value: Value) -> String {
@@ -177,7 +184,7 @@ public class CodeFormatter {
 
     func getEnumName(_ value: Value) -> String {
         let name = (value.globalName ?? value.name).upperCamelCased()
-        return disallowedTypes.contains(name) ? escapeEnumType(name) : name
+        return disallowedKeyword.contains(name) ? escapeEnumType(name) : name
     }
 
     func getEnumCaseName(_ name: String) -> String {
