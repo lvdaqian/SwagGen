@@ -19,6 +19,8 @@ public class Operation {
     public let path: String
     public let responses: [Response]
     public var security: [OperationSecurity]
+    public let consumes: [String]
+    public let produces: [String]
 
     public init(path: String, method: String, jsonDictionary: JSONDictionary) throws {
         self.method = method
@@ -28,6 +30,8 @@ public class Operation {
         tags = jsonDictionary.json(atKeyPath: "tags") ?? []
         parameters = jsonDictionary.json(atKeyPath: "parameters") ?? []
         security = jsonDictionary.json(atKeyPath: "security") ?? []
+        consumes = jsonDictionary.json(atKeyPath: "consumes") ?? []
+        produces = jsonDictionary.json(atKeyPath: "produces") ?? []
         let responseDictionary: JSONDictionary = try jsonDictionary.json(atKeyPath: "responses")
         var responses: [Response] = []
         for (key, value) in responseDictionary {

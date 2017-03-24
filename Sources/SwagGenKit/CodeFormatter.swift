@@ -77,10 +77,13 @@ public class CodeFormatter {
         context["headerParams"] = operation.getParameters(type: .header).map(getParameterContext)
         context["enums"] = operation.enums.map(getParameterContext)
         context["security"] = operation.security.map(getSecurityContext).first
+        context["consume"] = operation.consumes.first
+        context["consumes"] = operation.consumes
+        context["produce"] = operation.produces.first
+        context["produces"] = operation.produces
         context["responses"] = operation.responses.map(getResponseContext)
         context["successResponse"] = successResponse.flatMap(getResponseContext)
         context["successType"] = successResponse?.schema?.object.flatMap(getModelName) ?? successResponse?.schema.flatMap(getValueType)
-
         return context
     }
 
