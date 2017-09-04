@@ -9,12 +9,20 @@
 import Foundation
 import Swagger
 
+typealias Context = [String: Any?]
+
 public class CodeFormatter {
 
-    let spec: SwaggerSpec
+    var spec: SwaggerSpec
+    var filenames: [String] = []
+    var enums: [Enum] = []
 
     public init(spec: SwaggerSpec) {
         self.spec = spec
+    }
+
+    var disallowedNames: [String] {
+        return []
     }
 
     var disallowedTypes: [String] {
@@ -22,235 +30,333 @@ public class CodeFormatter {
     }
 
     public func getContext() -> [String: Any] {
-        return cleanDictionary(getSpecContext())
+        return getSpecContext().clean()
     }
 
-    func getSpecContext() -> [String: Any?] {
-        var context: [String: Any?] = [:]
+    func getSpecContext() -> Context {
+        var context: Context = [:]
 
+        context["raw"] = spec.json
+        enums = spec.enums
+        context["enums"] = enums.map(getEnumContext)
+        context["paths"] = spec.paths.map(getPathContext)
         context["operations"] = spec.operations.map(getOperationContext)
-        context["tags"] = spec.opererationsByTag.map { ["name": $0, "operations": $1.map(getOperationContext)] }
-        context["definitions"] = Array(spec.definitions.values).map(getSchemaContext)
-        context["info"] = spec.info.flatMap(getSpecInfoContext)
+        context["tags"] = spec.tags
+        context["operationsByTag"] = spec.operationsByTag.map { ["name": $0, "operations": $1.map(getOperationContext)] }
+        context["definitions"] = spec.definitions.map(getDefinitionContext)
+        context["info"] = getSpecInformationContext(spec.info)
         context["host"] = spec.host
         context["basePath"] = spec.basePath
-        context["baseURL"] = "\(spec.schemes.first ?? "http")://\(spec.host ?? "")\(spec.basePath ?? "")"
-        context["enums"] = spec.enums.map(getValueContext)
+        context["securityDefinitions"] = spec.securityDefinitions.map(getSecurityDefinitionContext)
+
+        let scheme = (spec.schemes?.first?.rawValue).flatMap { "\($0)://" }
+        context["baseURL"] = "\(scheme ?? "")\(spec.host?.absoluteString ?? "")\(spec.basePath ?? "")"
 
         return context
     }
 
-    func getSpecInfoContext(info: SwaggerSpec.Info) -> [String: Any?] {
-        var context: [String: Any?] = [:]
+    func getSecurityDefinitionContext(_ securityDefinition: SecuritySchema) -> Context {
+        var context: Context = [:]
 
-        context["title"] = info.title
+        context["name"] = securityDefinition.name
+        context["raw"] = securityDefinition.json
+
+        return context
+    }
+
+    func getSpecInformationContext(_ info: Info) -> Context {
+        var context: Context = [:]
+
+        context["title"] = info.title.description
         context["description"] = info.description
         context["version"] = info.version
 
         return context
     }
 
-    func getEndpointContext(endpoint: Endpoint) -> [String: Any?] {
-        return [
-            "path": endpoint.path,
-            "methods": Array(endpoint.methods.values).map(getOperationContext),
-        ]
-    }
+    func getDefinitionContext(_ schema: SwaggerObject<Schema>) -> Context {
+        var context = getSchemaContext(schema.value)
 
-    func getOperationContext(operation: Swagger.Operation) -> [String: Any?] {
-        let successResponse = operation.responses.filter { $0.statusCode == 200 || $0.statusCode == 204 }.first
-        var context: [String: Any?] = [:]
+        context["filename"] = getFilename(schema.name)
+        context["type"] = getModelType(schema.name)
 
-        if let operationId = operation.operationId {
-            context["operationId"] = operationId
-        } else {
-            let pathParts = operation.path.components(separatedBy: "/")
-            var pathName = pathParts.map{$0.upperCamelCased()}.joined(separator: "")
-            pathName = pathName.replacingOccurrences(of: "\\{(.*)\\}", with: "By_$1", options: .regularExpression, range: nil)
-            let generatedOperationId = operation.method.lowercased() + pathName.upperCamelCased()
-            context["operationId"] = generatedOperationId
+        if case .simple = schema.value.type {
+            context["simpleType"] = getSchemaType(name: schema.name, schema: schema.value)
+            if let enumValue = schema.value.getEnum(name: schema.name, description: schema.value.metadata.description) {
+                context["enum"] = getEnumContext(enumValue)
+            }
         }
 
-        context["method"] = operation.method.uppercased()
+        return context
+    }
+
+    func getSchemaContext(_ schema: Schema) -> Context {
+        var context: Context = [:]
+
+        context["raw"] = schema.metadata.json
+
+        if let parent = schema.parent {
+            context["parent"] = getDefinitionContext(parent)
+        }
+
+        context["description"] = schema.metadata.description
+        context["requiredProperties"] = schema.requiredProperties.map(getPropertyContext)
+        context["optionalProperties"] = schema.optionalProperties.map(getPropertyContext)
+        context["properties"] = schema.properties.map(getPropertyContext)
+        context["allProperties"] = schema.parentProperties.map(getPropertyContext)
+        context["enums"] = schema.enums.map(getEnumContext)
+
+        return context
+    }
+
+    func getPathContext(_ path: Path) -> Context {
+        var context: Context = [:]
+
+        context["path"] = path.path
+        context["parameters"] = path.parameters.map { $0.value }.map(getParameterContext)
+        context["operations"] = path.operations.map(getOperationContext)
+
+        return context
+    }
+
+    func getOperationContext(_ operation: Swagger.Operation) -> Context {
+        var context: Context = [:]
+
+        if let operationId = operation.identifier {
+            context["operationId"] = operationId
+            context["filename"] = getFilename(operationId)
+        } else {
+            let pathParts = operation.path.components(separatedBy: "/")
+            var pathName = pathParts.map { $0.upperCamelCased() }.joined(separator: "")
+            pathName = pathName.replacingOccurrences(of: "\\{(.*?)\\}", with: "By_$1", options: .regularExpression, range: nil)
+            let generatedOperationId = operation.method.rawValue.lowercased() + pathName.upperCamelCased()
+            context["operationId"] = generatedOperationId
+            context["filename"] = getFilename(generatedOperationId)
+        }
+
+        context["raw"] = operation.json
+        context["method"] = operation.method.rawValue.uppercased()
         context["path"] = operation.path
         context["description"] = operation.description
         context["tag"] = operation.tags.first
         context["tags"] = operation.tags
-        context["params"] = operation.parameters.map(getParameterContext)
-        context["hasBody"] = operation.parameters.filter{$0.parameterType == .body || $0.parameterType == .form}.count > 0
-        context["nonBodyParams"] = operation.parameters.filter { $0.parameterType != .body}.map(getParameterContext)
-        context["bodyParam"] = operation.getParameters(type: .body).map(getParameterContext).first
+
+        let params = operation.parameters.map { $0.value }
+
+        context["params"] = params.map(getParameterContext)
+        context["hasBody"] = params.contains { $0.location == .body || $0.location == .formData }
+        context["nonBodyParams"] = params.filter { $0.location != .body }.map(getParameterContext)
+        context["encodedParams"] = params.filter { $0.location == .formData || $0.location == .query }.map(getParameterContext)
+        if let bodyParam = operation.bodyParam {
+            context["bodyParam"] = getParameterContext(bodyParam.value)
+        }
         context["pathParams"] = operation.getParameters(type: .path).map(getParameterContext)
         context["queryParams"] = operation.getParameters(type: .query).map(getParameterContext)
-        context["formParams"] = operation.getParameters(type: .form).map(getParameterContext)
+        context["formParams"] = operation.getParameters(type: .formData).map(getParameterContext)
         context["headerParams"] = operation.getParameters(type: .header).map(getParameterContext)
-        context["enums"] = operation.enums.map(getParameterContext)
-        context["security"] = operation.security.map(getSecurityContext).first
-        context["responses"] = operation.responses.map(getResponseContext)
-        context["successResponse"] = successResponse.flatMap(getResponseContext)
-        context["successType"] = successResponse?.schema?.schema.flatMap(getSchemaType) ?? successResponse?.schema.flatMap(getValueType)
+        context["hasFileParam"] = params.contains { $0.metadata.type == .file }
+        context["securityRequirement"] = operation.security?.first.flatMap(getSecurityRequirementContext)
+        context["securityRequirements"] = operation.security?.map(getSecurityRequirementContext)
 
-        return context
-    }
+        // Responses
 
-    func getSecurityContext(security: OperationSecurity) -> [String: Any?] {
-        return [
-            "name": security.name,
-            "scope": security.scopes.first,
-            "scopes": security.scopes,
-        ]
-    }
+        let responses = operation.responses
+        let successResponse = responses.first { $0.successful }
+        let successResponses = responses.filter { $0.successful }.map(getResponseContext)
+        let failureResponses = responses.filter { !$0.successful }.map(getResponseContext)
 
-    func getResponseContext(response: Response) -> [String: Any?] {
-        return [
-            "statusCode": response.statusCode,
-            "schema": response.schema.flatMap(getValueContext),
-            "description": response.description,
-        ]
-    }
+        context["responses"] = responses.map(getResponseContext)
+        context["successResponse"] = successResponses.first
+        context["successType"] = successResponse.flatMap(getResponseContext)?["type"]
+        context["defaultResponse"] = responses.first { $0.statusCode == nil }.flatMap(getResponseContext)
+        context["onlySuccessReponses"] = successResponses.count == responses.count
+        context["alwaysHasResponseType"] = responses.filter { $0.response.value.schema != nil }.count == responses.count
 
-    func getValueContext(value: Value) -> [String: Any?] {
-        var context: [String: Any?] = [:]
+        let successTypes = successResponses.flatMap { $0["type"] as? String }
+        let failureTypes = failureResponses.flatMap { $0["type"] as? String }
 
-        context["type"] = getValueType(value)
-        context["rawType"] = value.type
-        context["rawName"] = value.name
-        context["name"] = getValueName(value)
-        context["value"] = value.name
-        context["required"] = value.required
-        context["optional"] = !value.required
-        context["enumName"] = getEnumName(value)
-        context["description"] = value.description
-        let enums = value.enumValues ?? value.arrayValue?.enumValues
-        context["enums"] = enums?.map { ["name": getEnumCaseName($0), "value": $0] }
-        context["arrayType"] = value.arraySchema.flatMap(getSchemaType)
-        context["dictionaryType"] = value.dictionarySchema.flatMap(getSchemaType)
-        context["isArray"] = value.type == "array"
-        context["isDictionary"] = value.type == "object" && (value.dictionarySchema != nil || value.dictionaryValue != nil)
-        context["isGlobal"] = value.isGlobal
-        return context
-    }
-
-    func getParameterContext(parameter: Parameter) -> [String: Any?] {
-        var context = getValueContext(value: parameter)
-
-        context["parameterType"] = parameter.parameterType?.rawValue
-
-        return context
-    }
-
-    func getPropertyContext(property: Property) -> [String: Any?] {
-        return getValueContext(value: property)
-    }
-
-    func getSchemaContext(schema: Schema) -> [String: Any?] {
-        var context: [String: Any?] = [:]
-        context["rawType"] = schema.name
-        context["type"] = getSchemaType(schema)
-        context["parent"] = schema.parent.flatMap(getSchemaContext)
-        context["description"] = schema.description
-        context["requiredProperties"] = schema.requiredProperties.map(getPropertyContext)
-        context["optionalProperties"] = schema.optionalProperties.map(getPropertyContext)
-        context["properties"] = schema.properties.map(getPropertyContext)
-        context["allProperties"] = schema.allProperties.map(getPropertyContext)
-        context["enums"] = schema.enums.map(getValueContext)
-        return context
-    }
-
-    func escapeModelType(_ name: String) -> String {
-        return "_\(name)"
-    }
-
-    func escapeEnumType(_ name: String) -> String {
-        return "_\(name)"
-    }
-
-    func getSchemaType(_ schema: Schema) -> String {
-        let type = schema.name.upperCamelCased()
-        return disallowedTypes.contains(type) ? escapeModelType(type) : type
-    }
-
-    func getValueName(_ value: Value) -> String {
-        return value.name.lowerCamelCased()
-    }
-
-    func getValueType(_ value: Value) -> String {
-        if let object = value.schema {
-            return getSchemaType(object)
+        if Set(successTypes).count == 1 {
+            context["singleSuccessType"] = successTypes.first
         }
-        if value.type == "unknown" {
-            writeError("Couldn't calculate type")
+        if Set(failureTypes).count == 1 {
+            context["singleFailureType"] = failureTypes.first
         }
-        return value.type
+
+        context["enums"] = operation.enums.map(getEnumContext)
+        context["requestEnums"] = operation.requestEnums.map(getEnumContext)
+        context["responseEnums"] = operation.responseEnums.map(getEnumContext)
+
+        return context
     }
 
-    func getEnumName(_ value: Value) -> String {
-        let name = (value.globalName ?? value.name).upperCamelCased()
-        return disallowedTypes.contains(name) ? escapeEnumType(name) : name
+    func getResponseContext(_ response: OperationResponse) -> Context {
+        var context: Context = [:]
+
+        context["success"] = response.successful
+        context["name"] = response.name.lowerCamelCased()
+        context["statusCode"] = response.statusCode
+        context["success"] = response.successful
+        context["schema"] = response.response.value.schema.flatMap(getSchemaContext)
+        context["description"] = response.response.value.description.description
+        context["type"] = response.response.value.schema.flatMap { getSchemaType(name: response.name, schema: $0) }
+
+        return context
     }
 
-    func getEnumCaseName(_ name: String) -> String {
-        return name.upperCamelCased()
-    }
-}
+    func getSecurityRequirementContext(_ securityRequirement: SecurityRequirement) -> Context {
+        var context: Context = [:]
 
-fileprivate func cleanDictionary(_ dictionary: [String: Any?]) -> [String: Any] {
-    var clean: [String: Any] = [:]
-    for (key, value) in dictionary {
-        if let value = value {
-            clean[key] = value
-            if let dictionary = value as? [String: Any?] {
-                clean[key] = cleanDictionary(dictionary)
-            } else if let array = value as? [[String: Any?]] {
-                clean[key] = array.map { cleanDictionary($0) }
+        context["name"] = securityRequirement.name
+        context["scope"] = securityRequirement.scopes.first
+        context["scopes"] = securityRequirement.scopes
+
+        return context
+    }
+
+    func getParameterContext(_ parameter: Parameter) -> Context {
+        var context: Context = [:]
+
+        context["raw"] = parameter.metadata.json
+        context["name"] = getName(parameter.name)
+        context["value"] = parameter.name
+        context["example"] = parameter.example
+        context["required"] = parameter.required
+        context["optional"] = !parameter.required
+        context["parameterType"] = parameter.location.rawValue
+        context["isFile"] = parameter.metadata.type == .file
+        context["description"] = parameter.description
+
+        switch parameter.type {
+        case let .body(schema): context["type"] = getSchemaType(name: parameter.name, schema: schema)
+        case let .other(item): context["type"] = getItemType(name: parameter.name, item: item)
+        }
+
+        return context
+    }
+
+    func getPropertyContext(_ property: Property) -> Context {
+        var context: Context = getSchemaContext(property.schema)
+
+        if let json = context["raw"] as? [String: Any] {
+            var newJson = json
+            newJson["name"] = property.name
+            context["raw"] = newJson
+        }
+
+        context["required"] = property.required
+        context["optional"] = !property.required
+        context["name"] = getName(property.name)
+        context["value"] = property.name
+        context["type"] = getSchemaType(name: property.name, schema: property.schema)
+
+        return context
+    }
+
+    func getEnumContext(_ enumValue: Enum) -> Context {
+        var context: Context = [:]
+
+        var specEnum: Enum?
+        for globalEnum in enums {
+            if String(describing: globalEnum.cases) == String(describing: enumValue.cases) {
+                specEnum = globalEnum
+                break
             }
         }
-    }
-    return clean
-}
+        context["enumName"] = getEnumTypeType(enumValue.name)
 
-func +(lhs: [String: Any?], rhs: [String: Any?]) -> [String: Any] {
-    var combined = cleanDictionary(lhs)
-    for (key, value) in rhs {
-        if let value = value {
-            combined[key] = value
+        if let specEnum = specEnum {
+            context["enumName"] = getEnumTypeType(specEnum.name)
+            context["isGlobal"] = true
         }
-    }
-    return combined
-}
+        context["enums"] = enumValue.cases.map { ["name": getName("\($0)"), "value": $0] }
+        context["description"] = specEnum?.description ?? enumValue.description
+        context["raw"] = enumValue.metadata.json
 
-extension String {
-
-    private func camelCased(seperator: String) -> String {
-        return components(separatedBy: seperator).map { $0.mapFirstChar { $0.uppercased() } }.joined(separator: "")
-    }
-
-    private func mapFirstChar(transform: (String) -> String) -> String {
-        guard !characters.isEmpty else { return self }
-
-        let first = transform(String(characters.prefix(1)))
-        let rest = String(characters.dropFirst())
-        return first + rest
+        switch enumValue.type {
+        case let .schema(schema): context["type"] = getSchemaType(name: "", schema: schema, checkEnum: false)
+        case let .item(item): context["type"] = getItemType(name: "", item: item, checkEnum: false)
+        }
+        return context
     }
 
-    private func camelCased() -> String {
-        return camelCased(seperator: " ")
-            .camelCased(seperator: "_")
-            .camelCased(seperator: "-")
-    }
+    func escapeString(_ string: String) -> String {
+        let replacements: [String: String] = [
+            ">=": "greaterThanOrEqualTo",
+            "<=": "lessThanOrEqualTo",
+            ">": "greaterThan",
+            "<": "lessThan",
+            "$": "dollar",
+            "%": "percent",
+            "#": "hash",
+            "@": "alpha",
+            "&": "and",
+            ]
+        var escapedString = string
+        for (symbol, replacement) in replacements {
+            escapedString = escapedString.replacingOccurrences(of: symbol, with: replacement)
+        }
+        escapedString = String(String.UnicodeScalarView(escapedString.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }))
 
-    func lowerCamelCased() -> String {
-
-        let string = camelCased()
-
-        if string == string.uppercased() {
-            return string.lowercased()
+        // prepend _ strings starting with numbers
+        if let firstCharacter = escapedString.unicodeScalars.first,
+            CharacterSet.decimalDigits.contains(firstCharacter) {
+            escapedString = "_\(escapedString)"
         }
 
-        return string.mapFirstChar { $0.lowercased() }
+        if escapedString.isEmpty || escapedString == "_" {
+            escapedString = "UNKNOWN234"
+        }
+        return escapedString
     }
 
-    func upperCamelCased() -> String {
-        return camelCased().mapFirstChar { $0.uppercased() }
+    // MARK: name and types
+
+    func getName(_ name: String) -> String {
+        var name = name.replacingOccurrences(of: "^-(\\d)", with: "_negative$1", options: .regularExpression)
+        name = name.lowerCamelCased()
+        return escapeName(name)
+    }
+
+    func getFilename(_ name: String) -> String {
+        let filename = escapeString(name.upperCamelCased())
+        filenames.append(filename)
+        return filename
+    }
+
+    func getEnumTypeType(_ name: String) -> String {
+        return escapeType(name.upperCamelCased())
+    }
+
+    func getItemType(name: String, item: Item, checkEnum: Bool = true) -> String {
+        return "UNKNOWN_ITEM_TYPE"
+    }
+
+    func getModelType(_ name: String) -> String {
+        let type = name.upperCamelCased()
+        return escapeType(type)
+    }
+
+    func getSchemaType(name: String, schema: Schema, checkEnum: Bool = true) -> String {
+        return "UNKNOWN_SCHEMA_TYPE"
+    }
+
+    // MARK: escaping
+
+    func escapeName(_ name: String) -> String {
+        let string = escapeString(name)
+        return disallowedNames.contains(string) ? getEscapedName(string) : string
+    }
+
+    func escapeType(_ type: String) -> String {
+        let string = escapeString(type)
+        return disallowedTypes.contains(string) ? getEscapedType(string) : string
+    }
+
+    func getEscapedType(_ type: String) -> String {
+        return "_\(type)"
+    }
+
+    func getEscapedName(_ name: String) -> String {
+        return "_\(name)"
     }
 }

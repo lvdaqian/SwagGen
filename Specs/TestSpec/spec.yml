@@ -1,0 +1,107 @@
+swagger: "2.0"
+info:
+  version: "1.0"
+  title: Test Spec
+paths:
+  /untagged:
+    get:
+      description: operation without a tag
+      parameters:
+        - id: string
+          in: query
+      responses:
+        201:
+          description: Empty response
+  /inlinebody:
+    post:
+      tags:
+        - TestTag
+      description: operation with an inline body
+      parameters:
+        - name: item
+          in: body
+          description: An inline item
+          required: true
+          schema:
+            type: object
+            properties:
+              id:
+                type: integer
+              name:
+                type: string
+      responses:
+        201:
+          description: Empty response
+  /inlineEnumResponse:
+    get:
+      description: operation with an enum response
+      responses:
+        200:
+          description: enum response
+          schema:
+            type: object
+            additionalProperties:
+              type: string
+              enum:
+                - one
+                - two
+  /string:
+    post:
+      description: operation with string body
+      consumes:
+      - text/plain
+      produces:
+      - application/json
+      parameters:
+      - in: body
+        name: body
+        required: false
+        schema:
+          type: string
+      responses:
+        default:
+          description: successful operation
+    get:
+      description: operation with string response
+      produces:
+      - text/plain
+      responses:
+        200:
+          description: string response
+          schema:
+            type: string
+definitions:
+  User:
+    type: object
+    properties:
+      name:
+        type: string
+      id:
+        type: integer
+  ModelWithAdditionalProperties:
+    description: definition with additional properties
+    type: object
+    additionalProperties: true
+    properties:
+      name:
+        type: string
+  ModelWithBooleanAdditionalProperties:
+    description: definition with bool additional properties
+    type: object
+    additionalProperties:
+      type: boolean
+    properties:
+      name:
+        type: string
+  ModelWithDefinitionAdditionalProperties:
+    description: definition with a Definition as additional properties
+    type: object
+    additionalProperties:
+      $ref: '#/definitions/User'
+    properties:
+      name:
+        type: string
+  ModelWithOnlyAdditionalProperties:
+    description: definition with only additional properties
+    type: object
+    additionalProperties: true

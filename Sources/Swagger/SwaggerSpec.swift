@@ -1,224 +1,185 @@
-//
-//  SwaggerSpec.swift
-//  SwagGen
-//
-//  Created by Yonas Kolb on 3/12/2016.
-//  Copyright © 2016 Yonas Kolb. All rights reserved.
-//
-
 import Foundation
 import JSONUtilities
 import Yams
+import PathKit
 
-public class SwaggerSpec: JSONObjectConvertible, CustomStringConvertible {
+public struct SwaggerSpec {
 
-    public let paths: [String: Endpoint]
-    public let definitions: [String: Schema]
-    public let parameters: [String: Parameter]
-    public let security: [String: Security]
-    public let info: Info?
-    public let host: String?
+    public let json: [String: Any]
+    public let version: String
+    public let info: Info
+    public let host: URL?
     public let basePath: String?
-    public let schemes: [String]
-    public var enums: [Value] = []
+    public let schemes: [TransferScheme]?
+    public let consumes: [String]?
+    public let produces: [String]?
+    public let paths: [Path]
+    public let securityDefinitions: [SecuritySchema]
+    public let definitions: [SwaggerObject<Schema>]
+    public let parameters: [SwaggerObject<Parameter>]
+    public let responses: [SwaggerObject<Response>]
 
-    public var operations: [Operation] {
-        return paths.values.reduce([]) { return $0 + $1.operations }
-    }
+    public let operations: [Operation]
 
     public var tags: [String] {
-        return Array(Set(operations.reduce([]) { $0 + $1.tags })).sorted { $0.compare($1) == .orderedAscending }
+        let tags: [String] = operations.reduce([]) { $0 + $1.tags }
+        let distinctTags = Array(Set(tags))
+        return distinctTags.sorted { $0.compare($1) == .orderedAscending }
     }
+}
 
-    public var opererationsByTag: [String: [Operation]] {
-        var dictionary: [String: [Operation]] = [:]
+public enum TransferScheme: String {
+    case http
+    case https
+    case ws
+    case wss
+}
 
-        for tag in tags {
-            dictionary[tag] = operations.filter { $0.tags.contains(tag) }
-        }
-        return dictionary
-    }
+public protocol NamedMappable {
+    init(name: String, jsonDictionary: JSONDictionary) throws
+}
 
-    public struct Info: JSONObjectConvertible {
+public struct SwaggerObject<T: JSONObjectConvertible> {
+    public let name: String
+    public let value: T
+}
 
-        public let title: String?
-        public let version: String?
-        public let description: String?
+extension SwaggerSpec {
 
-        public init(jsonDictionary: JSONDictionary) throws {
-            title = jsonDictionary.json(atKeyPath: "title")
-            version = jsonDictionary.json(atKeyPath: "version")
-            description = jsonDictionary.json(atKeyPath: "description")
-        }
-    }
-
-    public convenience init(path: String) throws {
-        var url = URL(string: path)!
+    public init(path: PathKit.Path) throws {
+        var url = URL(string: path.string)!
         if url.scheme == nil {
-            url = URL(fileURLWithPath: path)
+            url = URL(fileURLWithPath: path.string)
         }
 
         let data = try Data(contentsOf: url)
         let string = String(data: data, encoding: .utf8)!
+
+        try self.init(string: string)
+    }
+
+    public init(string: String) throws {
         let yaml = try Yams.load(yaml: string)
         let json = yaml as! JSONDictionary
 
         try self.init(jsonDictionary: json)
     }
+}
 
-    required public init(jsonDictionary: JSONDictionary) throws {
-        info = jsonDictionary.json(atKeyPath: "info")
+extension SwaggerSpec: JSONObjectConvertible {
+
+    public init(jsonDictionary: JSONDictionary) throws {
+        json = jsonDictionary
+        version = String(describing: jsonDictionary["swagger"])
+        if let swaggerVersion = Double(version),
+            floor(swaggerVersion) != 2 {
+            throw SwaggerError.incorrectVersion(version)
+        }
+
+        info = try jsonDictionary.json(atKeyPath: "info")
         host = jsonDictionary.json(atKeyPath: "host")
         basePath = jsonDictionary.json(atKeyPath: "basePath")
-        schemes = jsonDictionary.json(atKeyPath: "schemes") ?? []
+        schemes = jsonDictionary.json(atKeyPath: "schemes")
+        consumes = jsonDictionary.json(atKeyPath: "consumes")
+        produces = jsonDictionary.json(atKeyPath: "produces")
 
-        var paths: [String: Endpoint] = [:]
-        if let pathsDictionary = jsonDictionary["paths"] as? [String: JSONDictionary] {
-
-            for (path, endpointDictionary) in pathsDictionary {
-                paths[path] = try Endpoint(path: path, jsonDictionary: endpointDictionary)
+        func decodeObject<T: JSONObjectConvertible>(jsonDictionary: JSONDictionary, key: String) throws -> [SwaggerObject<T>] {
+            var values: [SwaggerObject<T>] = []
+            if let dictionary = jsonDictionary[key] as? [String: Any] {
+                for (key, value) in dictionary {
+                    if let dictionary = value as? [String: Any] {
+                        let value = try T(jsonDictionary: dictionary )
+                        values.append(SwaggerObject<T>(name: key, value: value))
+                    }
+                }
             }
+            return values
         }
-        self.paths = paths
-        definitions = jsonDictionary.json(atKeyPath: "definitions") ?? [:]
-        parameters = jsonDictionary.json(atKeyPath: "parameters") ?? [:]
-        security = jsonDictionary.json(atKeyPath: "securityDefinitions") ?? [:]
 
-        resolve()
+        func decodeNamed<T: NamedMappable>(jsonDictionary: JSONDictionary, key: String) throws -> [T] {
+            var values: [T] = []
+            if let dictionary = jsonDictionary[key] as? [String: Any] {
+                for (key, value) in dictionary {
+                    if let dictionary = value as? [String: Any] {
+                        let value = try T(name: key, jsonDictionary: dictionary )
+                        values.append(value)
+                    }
+                }
+            }
+            return values
+        }
+
+        paths = try decodeNamed(jsonDictionary: jsonDictionary , key: "paths")
+        securityDefinitions = try decodeNamed(jsonDictionary: jsonDictionary , key: "securityDefinitions")
+        definitions = try decodeObject(jsonDictionary: jsonDictionary , key: "definitions")
+        parameters = try decodeObject(jsonDictionary: jsonDictionary , key: "parameters")
+        responses = try decodeObject(jsonDictionary: jsonDictionary , key: "responses")
+
+        operations = paths.reduce([]) { $0 + $1.operations }
+
+        resolveReferences()
     }
 
-    func resolve() {
-        for (name, security) in security {
-            security.name = name
-        }
+    func resolveReferences() {
 
-        for (name, parameter) in parameters {
-            parameter.isGlobal = true
-            parameter.globalName = name
-            if parameter.enumValues != nil {
-                enums.append(parameter)
-            }
-            else if let arrayEnum = parameter.arrayValue, arrayEnum.enumValues != nil {
-                arrayEnum.isGlobal = true
-                arrayEnum.globalName = name
-                enums.append(arrayEnum)
+        func resolveDefinitionReference(_ reference: Reference<Schema>) {
+            let components = reference.string.components(separatedBy: "/")
+            if components.count == 3 && components[0] == "#" && components[1] == "definitions" {
+                let name = components[2]
+                if let schema = definitions.first(where: { $0.name == name }) {
+                    reference.resolve(with: schema.value)
+                }
             }
         }
 
-        for (name, definition) in definitions {
-            definition.name = name
-
-            if let reference = getDefinitionSchema(definition.reference) {
-                for property in reference.properties {
-                    definition.propertiesByName[property.name] = property
-                }
-            }
-
-            if let reference = getDefinitionSchema(definition.parentReference) {
-                definition.parent = reference
-            }
-
-            for property in definition.properties {
-                if let reference = getDefinitionSchema(property.reference) {
-                    property.schema = reference
-                }
-                if let reference = getDefinitionSchema(property.arrayRef) {
-                    property.arraySchema = reference
-                }
-                if let reference = getDefinitionSchema(property.dictionarySchemaRef) {
-                    property.dictionarySchema = reference
-                }
-
-                for enumValue in enums {
-                    let propertyEnumValues = property.enumValues ?? property.arrayValue?.enumValues ?? []
-                    let globalEnumValues = enumValue.enumValues ?? enumValue.arrayValue?.enumValues ?? []
-                    if !propertyEnumValues.isEmpty && propertyEnumValues == globalEnumValues {
-                        property.isGlobal = true
-                        property.globalName = enumValue.globalName ?? enumValue.name
-                        continue
+        func resolveParameterReference(_ reference: PossibleReference<Parameter>) {
+            if case let .reference(reference) = reference {
+                let components = reference.string.components(separatedBy: "/")
+                if components.count == 3 && components[0] == "#" && components[1] == "parameters" {
+                    let name = components[2]
+                    if let param = parameters.first(where: { $0.name == name }) {
+                        reference.resolve(with: param.value)
                     }
                 }
             }
         }
 
-        for operation in operations {
-
-            for (index, parameter) in operation.parameters.enumerated() {
-                if let reference = getDefinitionSchema(parameter.reference) {
-                    parameter.schema = reference
+        func resolveSchema(_ schema: Schema) {
+            switch schema.type {
+            case let .reference(reference): resolveDefinitionReference(reference)
+            case let .object(object):
+                object.properties.forEach { resolveSchema($0.schema) }
+                if case let .schema(schema) = object.additionalProperties {
+                    resolveSchema(schema)
                 }
-                if let reference = getParameterReference(parameter.reference) {
-                    operation.parameters[index] = reference
+            case let .allOf(allOf): allOf.subschemas.forEach(resolveSchema)
+            case let .array(array):
+                switch array.items {
+                case let .single(schema): resolveSchema(schema)
+                case let .multiple(schemas): schemas.forEach(resolveSchema)
                 }
-                if let reference = getDefinitionSchema(parameter.arrayRef) {
-                    parameter.arraySchema = reference
+                if case let .schema(schema) = array.additionalItems {
+                    resolveSchema(schema)
                 }
+            default: break
             }
-            for response in operation.responses {
-                if let reference = getDefinitionSchema(response.schema?.reference) {
-                    response.schema?.schema = reference
-                } else if let reference = getDefinitionSchema(response.schema?.arrayRef) {
-                    response.schema?.arraySchema = reference
-                }
-                if let reference = getDefinitionSchema(response.schema?.dictionarySchemaRef) {
-                    response.schema?.dictionarySchema = reference
-                }
+        }
+
+        func resolveParamater(_ parameter: Parameter) {
+            switch parameter.type {
+            case let .body(schema): resolveSchema(schema)
+            default: break
+            }
+        }
+
+        definitions.forEach { resolveSchema($0.value) }
+        parameters.forEach { resolveParamater($0.value) }
+        paths.forEach { path in
+            path.parameters.forEach(resolveParameterReference)
+            path.operations.forEach {
+                $0.pathParameters.forEach(resolveParameterReference)
+                $0.operationParameters.forEach(resolveParameterReference)
             }
         }
     }
-
-    func getDefinitionSchema(_ reference: String?) -> Schema? {
-        return reference?.components(separatedBy: "/").last.flatMap { definitions[$0] }
-    }
-
-    func getParameterReference(_ reference: String?) -> Parameter? {
-        return reference?.components(separatedBy: "/").last.flatMap { parameters[$0] }
-    }
-
-    public var description: String {
-        let ops = "Operations:\n\t" + operations.map { $0.operationId ?? $0.path }.joined(separator: "\n\t") as String
-        let defs = "Definitions:\n" + Array(definitions.values).map { $0.deepDescription(prefix: "\t") }.joined(separator: "\n") as String
-        return "\(info)\n\n\(ops)\n\n\(defs))"
-    }
 }
-
-public class Endpoint {
-
-    public let path: String
-    public let methods: [String: Operation]
-
-    required public init(path: String, jsonDictionary: JSONDictionary) throws {
-        self.path = path
-
-        var methods: [String: Operation] = [:]
-        for method in jsonDictionary.keys {
-            if method != "security", let dictionary = jsonDictionary[method] as? JSONDictionary {
-                let operation = try Operation(path: path, method: method, jsonDictionary: dictionary)
-                methods[method] = operation
-            }
-        }
-        self.methods = methods
-    }
-
-    public var operations: [Operation] { return Array(methods.values) }
-}
-
-public class Security: JSONObjectConvertible {
-
-    public var name: String = ""
-    public var type: String
-    public let scopes: [String]?
-    public var description: String?
-
-    required public init(jsonDictionary: JSONDictionary) throws {
-        type = try jsonDictionary.json(atKeyPath: "type")
-        description = jsonDictionary.json(atKeyPath: "description")
-        scopes = jsonDictionary.json(atKeyPath: "scopes")
-    }
-
-    func deepDescription(prefix: String) -> String {
-        return "\(prefix)\(name): \(type)"
-    }
-}
-
-

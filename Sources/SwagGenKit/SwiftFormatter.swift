@@ -11,97 +11,250 @@ import Swagger
 
 public class SwiftFormatter: CodeFormatter {
 
-    override var disallowedTypes: [String] {
+    var disallowedKeywords: [String] {
         return [
             "Type",
-            "Class",
-            "Struct",
-            "Enum",
-            "Protocol",
-            "Set",
+            "class",
+            "struct",
+            "enum",
+            "protocol",
+            "extension",
+            "return",
+            "throw",
+            "throws",
+            "rethrows",
+            "public",
+            "open",
+            "private",
+            "fileprivate",
+            "internal",
+            "let",
+            "var",
+            "where",
+            "guard",
+            "associatedtype",
+            "deinit",
+            "func",
+            "import",
+            "inout",
+            "operator",
+            "static",
+            "subscript",
+            "typealias",
+            "case",
+            "break",
+            "continue",
+            "default",
+            "defer",
+            "do",
+            "else",
+            "fallthrough",
+            "for",
+            "if",
+            "in",
+            "repeat",
+            "switch",
+            "where",
+            "while",
+            "as",
+            "Any",
+            "AnyObject",
+            "catch",
+            "false",
+            "true",
+            "is",
+            "nil",
+            "super",
+            "self",
+            "Self",
         ]
     }
 
-    override func getValueType(_ value: Value) -> String {
+    var inbuiltTypes: [String] = [
+        "Error",
+        "Data",
+        ]
 
-        if value.enumValues != nil && value.name != "" {
-            return getEnumName(value)
+    override var disallowedNames: [String] { return disallowedKeywords + inbuiltTypes }
+    override var disallowedTypes: [String] { return disallowedKeywords + inbuiltTypes }
+
+    override func getItemType(name: String, item: Item, checkEnum: Bool = true) -> String {
+
+        var enumValue: String?
+        if checkEnum {
+            enumValue = item.metadata.getEnum(name: name, type: .item(item), description: "").flatMap { getEnumContext($0)["enumName"] as? String }
         }
+        //TODO: support nonstring enums
 
-        if let format = value.format {
-            switch format.lowercased() {
-            case "date-time": return "Date"
-            default: break
-            }
-        }
-
-        switch value.type.lowercased() {
-        case "int", "integer", "int32", "int64": return "Int"
-        case "string":
-            if value.format == "uri" {
-                return "URL"
-            }
-            return "String"
-        case "number", "double": return "Double"
-        case "date": return "Date"
-        case "boolean": return "Bool"
-        case "file": return "URL"
-        case "uri": return "URL"
-        case "object":
-            if let schema = value.dictionarySchema {
-                return "[String: \(getSchemaType(schema))]"
-            } else if let value = value.dictionaryValue {
-                return "[String: \(getValueType(value))]"
+        switch item.type {
+        case let .array(item):
+            let type = getItemType(name: name, item: item.items, checkEnum: checkEnum)
+            return checkEnum ? "[\(enumValue ?? type )]" : type
+        case let .simpleType(simpleType):
+            if simpleType.canBeEnum, let enumValue = enumValue {
+                return enumValue
             } else {
-                return "[String: Any]"
+                return getSimpleType(simpleType)
             }
-        case "array":
-            if let schema = value.arraySchema {
-                return "[\(getSchemaType(schema))]"
-            } else {
-                let arrayValue = value.arrayValue!
-                return "[\(arrayValue.enumValues != nil ? getEnumName(value) : getValueType(arrayValue))]"
-            }
-        default: break
         }
-        return super.getValueType(value)
     }
 
-    override func getValueContext(value: Value) -> [String: Any?] {
-        var encodedValue = getValueName(value)
-
-        let type = getValueType(value)
-        let jsonTypes = ["Any", "[String: Any]", "Int", "String", "Float", "Double", "Bool"]
-
-        if !jsonTypes.contains(type) && !jsonTypes.map({"[\($0)]"}).contains(type) && !jsonTypes.map({"[String: \($0)]"}).contains(type) {
-            encodedValue += ".encode()"
-        }
-
-        if value.type == "array", let collectionFormatSeperator = value.collectionFormatSeperator {
-            if type != "[String]" {
-                encodedValue += ".map({ \"\\($0)\" })"
+    func getSimpleType(_ simpleType: SimpleType) -> String {
+        switch simpleType {
+        case let .string(item):
+            guard let format = item.format else {
+                return "String"
             }
-            encodedValue += ".joined(separator: \"\(collectionFormatSeperator)\")"
+            switch format {
+            case let .format(format):
+                switch format {
+                case .binary, .byte: return "String" // TODO: Data
+                case .dateTime, .date: return "Date"
+                case .email, .hostname, .ipv4, .ipv6, .password: return "String"
+                case .uri: return "URL"
+                }
+            case .other: return "String"
+            }
+        case let .number(item):
+            guard let format = item.format else {
+                return "Double"
+            }
+            switch format {
+            case .double: return "Double"
+            case .float: return "Float"
+            }
+        case .integer:
+            return "Int"
+        case .boolean:
+            return "Bool"
+        case .file: return "URL"
+        }
+    }
+
+    override func getSchemaType(name: String, schema: Schema, checkEnum: Bool = true) -> String {
+        var enumValue: String?
+        if checkEnum {
+            enumValue = schema.getEnum(name: name, description: "").flatMap { getEnumContext($0)["enumName"] as? String }
         }
 
-        if !value.required, let range = encodedValue.range(of: ".") {
+        switch schema.type {
+        case let .simple(simpleType):
+            if simpleType.canBeEnum, let enumValue = enumValue {
+                return enumValue
+            } else {
+                return getSimpleType(simpleType)
+            }
+        case let .array(arraySchema):
+            switch arraySchema.items {
+            case let .single(type):
+                let typeString = getSchemaType(name: name, schema: type, checkEnum: checkEnum)
+                return checkEnum ? "[\(enumValue ?? typeString)]" : typeString
+            case let .multiple(types):
+                let typeString = getSchemaType(name: name, schema: types.first!, checkEnum: checkEnum)
+                return checkEnum ? "[\(enumValue ?? typeString)]" : typeString
+            }
+        case let .object(schema):
+//            if schema.properties.isEmpty {
+                switch schema.additionalProperties {
+                case .bool: return "[String: Any]"
+                case let .schema(schema):
+                    let typeString = getSchemaType(name: name, schema: schema, checkEnum: checkEnum)
+                    return checkEnum ? "[String: \(enumValue ?? typeString)]" : typeString
+                }
+//            } else {
+//                return getModelType(name)
+//            }
+        case let .reference(reference): return escapeType(reference.name.upperCamelCased())
+        case .allOf: return "UKNOWN_ALL_OFF"
+        case .any: return "UKNOWN_ANY"
+        }
+    }
+
+    override func getSchemaContext(_ schema: Schema) -> Context {
+        var context = super.getSchemaContext(schema)
+
+        if case let .object(objectSchema) = schema.type {
+
+            switch objectSchema.additionalProperties {
+            case let .bool(bool):
+                if bool {
+                    context["additionalPropertiesType"] = "Any"
+                }
+            case let .schema(schema):
+                context["additionalPropertiesType"] = getSchemaType(name: "Anonymous", schema: schema)
+            }
+        }
+
+        return context
+    }
+
+    override func getParameterContext(_ parameter: Parameter) -> Context {
+        var context = super.getParameterContext(parameter)
+
+        let type = context["type"] as! String
+        let name = context["name"] as! String
+
+        context["optionalType"] = type + (parameter.required ? "" : "?")
+        var encodedValue = getEncodedValue(name: getName(name), type: type)
+
+        if case let .other(items) = parameter.type,
+            case let .array(item) = items.type {
+            if type != "[String]" {
+                encodedValue += ".map({ String(describing: $0) })"
+            }
+            encodedValue += ".joined(separator: \"\(item.collectionFormat.separator)\")"
+        }
+        if !parameter.required, let range = encodedValue.range(of: ".") {
             encodedValue = encodedValue.replacingOccurrences(of: ".", with: "?.", options: [], range: range)
         }
-        return super.getValueContext(value: value) + [
-            "encodedValue": encodedValue,
-            "optionalType": getValueType(value) + (value.required ? "" : "?"),
-        ]
+        context["encodedValue"] = encodedValue
+        return context
     }
 
-    override func escapeModelType(_ name: String) -> String {
-        return "\(name)Type"
+    func getEncodedValue(name: String, type: String) -> String {
+        var encodedValue = name
+
+        let jsonTypes = ["Any", "[String: Any]", "Int", "String", "Float", "Double", "Bool"]
+
+        if !jsonTypes.contains(type) && !jsonTypes.map({ "[\($0)]" }).contains(type) && !jsonTypes.map({ "[String: \($0)]" }).contains(type) {
+            if type.hasPrefix("[[") {
+                encodedValue += ".map({ $0.encode() })"
+            } else if type.hasPrefix("[String: [") {
+                encodedValue += ".mapValues({ $0.encode() })"
+            } else {
+                encodedValue += ".encode()"
+            }
+        }
+
+        return encodedValue
     }
 
-    override func escapeEnumType(_ name: String) -> String {
-        return "\(name)Enum"
+    override func getPropertyContext(_ property: Property) -> Context {
+        var context = super.getPropertyContext(property)
+
+        let type = context["type"] as! String
+        let name = context["name"] as! String
+
+        context["optionalType"] = type + (property.required ? "" : "?")
+        var encodedValue = getEncodedValue(name: getName(name), type: type)
+
+        if !property.required, let range = encodedValue.range(of: ".") {
+            encodedValue = encodedValue.replacingOccurrences(of: ".", with: "?.", options: [], range: range)
+        }
+
+        context["encodedValue"] = encodedValue
+
+        return context
     }
 
-    override func getEnumCaseName(_ name: String) -> String {
-        return name.lowerCamelCased()
+    override func getEscapedType(_ name: String) -> String {
+        if inbuiltTypes.contains(name) {
+            return "\(name)Type"
+        }
+        return "`\(name)`"
+    }
+    
+    override func getEscapedName(_ name: String) -> String {
+        return "`\(name)`"
     }
 }

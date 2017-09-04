@@ -1,7 +1,6 @@
-import XCTest
+import SwaggerTests
+import SwagGenKitTests
 
-@testable import SwagGenTests
-
-XCTMain([
-    testCase(SwaggerTests.allTests),
-])
+testFixtures()
+testParsing()
+testSpecs()
